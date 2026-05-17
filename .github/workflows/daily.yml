@@ -1,0 +1,157 @@
+name: Daily High-Freq Words Generator
+
+on:
+  schedule:
+    # 目标：北京时间每天 9:00 收到
+    # GitHub免费版 cron 实测延迟约1-3小时
+    # UTC 01:00（当天）= 北京 09:00 触发，延迟1-3h后约 10:00-12:00 收到
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      day_num:
+        description: '指定天数 (1-103)'
+        required: false
+        default: ''
+
+jobs:
+  generate-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install edge-tts requests
+
+      - name: Calculate day number
+        id: calc
+        run: |
+          # 项目开始日期（可调整）
+          START_DATE="2026-04-22"
+          
+          if [ -n "${{ github.event.inputs.day_num }}" ]; then
+            DAY_NUM="${{ github.event.inputs.day_num }}"
+          else
+            # 计算从开始日期到今天的天数+1
+            START_SEC=$(date -d "$START_DATE" +%s)
+            TODAY_SEC=$(date +%s)
+            DIFF_SEC=$((TODAY_SEC - START_SEC))
+            DAY_NUM=$((DIFF_SEC / 86400 + 1))
+            
+            # 边界检查：共1028词，103天完成
+            if [ "$DAY_NUM" -lt 1 ]; then DAY_NUM=1; fi
+            if [ "$DAY_NUM" -gt 103 ]; then
+              echo "⚠️ 已完成全部103天课程！循环回Day 1"
+              echo "cycle=true" >> $GITHUB_OUTPUT
+              DAY_NUM=1
+            else
+              echo "cycle=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+          
+          TODAY=$(date +%Y-%m-%d)
+          echo "day_num=$DAY_NUM" >> $GITHUB_OUTPUT
+          echo "today=$TODAY" >> $GITHUB_OUTPUT
+          echo "📅 Day $DAY_NUM | Date: $TODAY"
+
+      - name: Generate TTS audio for today (with retry)
+        run: |
+          DAY=${{ steps.calc.outputs.day_num }}
+          START=$(( (DAY - 1) * 10 + 1 ))
+          END=$(( DAY * 10 ))
+          
+          # 如果END超过词库总数，截断
+          TOTAL=1028
+          if [ "$END" -gt "$TOTAL" ]; then
+            END=$TOTAL
+          fi
+          
+          echo "🎙️ 生成第 $START ~ $END 词的 TTS 音频..."
+          
+          # 强制重新生成（--force），避免使用仓库中过期的旧音频
+          # 旧音频可能对应旧版句子内容，导致发音与例句不匹配
+          # 重试机制：最多尝试2次
+          python scripts/generate_audio.py --start $START --end $END --force || {
+            echo "[RETRY] TTS generation failed, retrying once..."
+            sleep 5
+            python scripts/generate_audio.py --start $START --end $END --force
+          }
+        env:
+          PYTHONIOENCODING: utf-8
+
+      - name: Generate daily HTML
+        run: |
+          python scripts/generate.py generate ${{ steps.calc.outputs.day_num }} ${{ steps.calc.outputs.today }}
+        env:
+          PYTHONIOENCODING: utf-8
+
+      - name: Embed audio into HTML (base64)
+        run: |
+          python scripts/embed_high_freq_audio.py ${{ steps.calc.outputs.day_num }} ${{ steps.calc.outputs.today }}
+        env:
+          PYTHONIOENCODING: utf-8
+
+      - name: Push to GitHub Pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 只提交 output/（HTML已包含内嵌音频）
+          git add output/ || true
+          
+          # 也提交当天新生成的 TTS mp3 文件（保留源文件）
+          DAY=${{ steps.calc.outputs.day_num }}
+          START=$(( (DAY - 1) * 10 + 1 ))
+          END=$(( DAY * 10 ))
+          for i in $(seq $START $END); do
+            PADDED=$(printf '%04d' $i)
+            git add "audio/tts/$PADDED/" 2>/dev/null || true
+          done
+          
+          if git diff --cached --quiet; then
+            echo "ℹ️ No changes to commit"
+          else
+            git commit -m "📚 Day ${{ steps.calc.outputs.day_num }} (${{ steps.calc.outputs.today }}) - High Freq Words [audio embedded]"
+            git push || echo "Push failed (might be first time)"
+          fi
+
+      - name: Notify Feishu (飞书推送)
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          python scripts/push_notify.py feishu \
+            --day ${{ steps.calc.outputs.day_num }} \
+            --date ${{ steps.calc.outputs.today }} \
+            --url "https://zjunxcr.github.io/high-freq-words/output/high_freq_words_day$(printf '%03d' ${{ steps.calc.outputs.day_num }})_${{ steps.calc.outputs.today }}.html"
+        continue-on-error: true
+
+      - name: Notify WeChat (微信推送)
+        env:
+          WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          python scripts/push_notify.py wechat \
+            --day ${{ steps.calc.outputs.day_num }} \
+            --date ${{ steps.calc.outputs.today }} \
+            --url "https://zjunxcr.github.io/high-freq-words/output/high_freq_words_day$(printf '%03d' ${{ steps.calc.outputs.day_num }})_${{ steps.calc.outputs.today }}.html"
+        continue-on-error: true
+
+      # 延迟通知：等Pages部署完成后再发一次确认链接可用（可选）
+      - name: Delayed link check (等待Pages部署)
+        if: always()
+        run: |
+          sleep 30
+          PAGE_URL="https://zjunxcr.github.io/high-freq-words/output/high_freq_words_day$(printf '%03d' ${{ steps.calc.outputs.day_num }})_${{ steps.calc.outputs.today }}.html"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$PAGE_URL" || echo "000")
+          echo "Pages URL status: $HTTP_CODE ($PAGE_URL)"
