@@ -110,8 +110,10 @@ def build_message(day_num, date_str):
         
         word_list = []
         for w in day_words:
+            # 有道词典免费发音 API
+            audio_url = f"https://dict.youdao.com/dictvoice?audio={w['word']}&type=0"
             word_list.append(
-                f"**{w['word']}** {w['phonetic']}\n"
+                f"**{w['word']}** [🔊]({audio_url}) {w['phonetic']}\n"
                 f"> {w['meaning']}\n"
                 f"> 📝 {w['sentence']}\n"
                 f"> 🇨🇳 {w['sentence_cn']}\n"
