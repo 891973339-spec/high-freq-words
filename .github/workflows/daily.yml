@@ -36,7 +36,7 @@ jobs:
         id: calc
         run: |
           # 项目开始日期（可调整）
-          START_DATE="2026-04-22"
+          START_DATE="2026-05-17"
           
           if [ -n "${{ github.event.inputs.day_num }}" ]; then
             DAY_NUM="${{ github.event.inputs.day_num }}"
