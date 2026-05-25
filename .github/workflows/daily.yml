@@ -132,7 +132,7 @@ jobs:
           python scripts/push_notify.py feishu \
             --day ${{ steps.calc.outputs.day_num }} \
             --date ${{ steps.calc.outputs.today }} \
-            --url "https://zjunxcr.github.io/high-freq-words/output/high_freq_words_day$(printf '%03d' ${{ steps.calc.outputs.day_num }})_${{ steps.calc.outputs.today }}.html"
+            --url "https://raw.githubusercontent.com/891973339-spec/high-freq-words/master/output/high_freq_words_day$(printf '%03d' ${{ steps.calc.outputs.day_num }})_${{ steps.calc.outputs.today }}.html"
         continue-on-error: true
 
       - name: Notify WeChat (微信推送)
